@@ -1,4 +1,4 @@
-# 🧩 Wazuh–n8n–VirusTotal File Upload Automation
+# 🧩 Wazuh n8n VirusTotal File Upload Automation
 
 ## 🔍 Project Overview
 
