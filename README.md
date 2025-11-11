@@ -86,22 +86,180 @@ systemctl restart wazuh-manager
 ```
 ----
 
-# 2️⃣ n8n Workflow Setup
+# 2️⃣ Extract File Details
 
-Node Order:
+javascript:
 
-Webhook Node
+```javascript
+// All useful data is inside the "body" object
+const body = $json.body || {};
 
-Execute Command Node
+const filePath = body.path || body.full_alert?.syscheck?.path || "";
+const md5 = body.md5 || body.full_alert?.syscheck?.md5_after || "";
+const sha256 = body.sha256 || body.full_alert?.syscheck?.sha256_after || "";
+const event = body.event || body.full_alert?.syscheck?.event || "";
+const agentName = body.agent || body.full_alert?.agent?.name || "unknown";
+const agentIp = body.full_alert?.agent?.ip || "192.168.122.202";
 
-Code Node → Prepare Binary
+return [{
+  json: {
+    file_path: filePath,
+    md5: md5,
+    sha256: sha256,
+    agent: agentName,
+    agent_ip: agentIp,
+    agent_user: "kali", // your SSH user
+    event: event,
+    timestamp: body.timestamp || body.full_alert?.timestamp || ""
+  }
+}];
+```
 
-HTTP Request Node → Upload file to VirusTotal
+---
 
-Wait Node (5 seconds)
+# 3️⃣ Execute Command Node
 
-IF Node → Check if status = completed
+On Agent Side Configuration:
 
-Code Node → Format summary + link
+```bash
+# sudo tee /usr/local/bin/n8n_read_root_file > /dev/null <<'SH'  
+#!/bin/bash                                                
+# ==========================================
+# n8n_read_root_file
+# Safely output a /root file as base64          
+# Usage: n8n_read_root_file /root/filename
+# ==========================================
 
-Gmail Node → Send SOC email
+REQUESTED="$1"
+
+# Allow only files under /root/
+case "$REQUESTED" in
+  /root/*)
+    if [ -f "$REQUESTED" ] && [ -r "$REQUESTED" ]; then
+      base64 -w 0 "$REQUESTED"
+      exit 0
+    else  
+      echo "__ERROR__NOT_READABLE__"
+      exit 2
+    fi    
+    ;;
+  *)  
+    echo "__ERROR__INVALID_PATH__"
+    exit 3
+    ;;  
+esac
+SH
+
+sudo chmod 750 /usr/local/bin/n8n_read_root_file
+sudo chown root:root /usr/local/bin/n8n_read_root_file
+```
+```bash 
+sudo tee /etc/sudoers.d/n8n_read_root_file > /dev/null <<'SUDO'
+kali ALL=(root) NOPASSWD: /usr/local/bin/n8n_read_root_file
+SUDO                                        
+
+sudo chmod 440 /etc/sudoers.d/n8n_read_root_file
+```
+n8n Configuration:
+
+In Command Execution Node:
+
+```command
+/root/scripts/n8n_read_root_file.sh {{$json["file_path"]}}
+```
+---
+
+# 4️⃣ Prepare Binary for VirusTotal
+
+Javascript:
+```javascript
+const stdout = $json["stdout"] ? $json["stdout"].trim() : "";
+
+if (!stdout) {
+  throw new Error("No base64 data from SSH node");
+}
+
+// Derive filename from path
+const filename = $json["file_path"]
+  ? $json["file_path"].split("/").pop()
+  : "suspicious.bin";
+
+// Return binary item for VirusTotal upload
+return [
+  {
+    json: {
+      file_path: $json["file_path"],
+      filename: filename
+    },
+    binary: {
+      file: {
+        data: stdout,
+        fileName: filename,
+        mimeType: "application/octet-stream"
+      }
+    }
+  }
+];
+
+```
+
+---
+# 5️⃣ Upload File to VirusTotal
+<img width="472" height="754" alt="image" src="https://github.com/user-attachments/assets/3275cc2e-f7b8-4bc3-aab8-152e46636608" />
+---
+
+# 6️⃣ Check Analysis Status:
+<img width="477" height="661" alt="image" src="https://github.com/user-attachments/assets/e538e459-b190-4673-bc26-4040910e0afa" />
+
+---
+
+# 7️⃣ Build Scan Summary:
+javascript:
+```javascript 
+// Input: VirusTotal analysis JSON in $json
+const vt = $json["data"] || {};
+const attrs = vt.attributes || {};
+const stats = attrs.stats || {};
+const results = attrs.results || {};
+const fileInfo = $json["meta"]?.file_info || {};
+const vtLink = vt.links?.item || "";
+
+// Extract top 3 engines that flagged the file
+const flaggedEngines = Object.entries(results)
+  .filter(([engine, data]) => data.category && data.category !== "undetected")
+  .map(([engine, data]) => ({
+    engine: data.engine_name,
+    category: data.category,
+    result: data.result
+  }))
+  .slice(0, 3); // Top 3
+
+// Define overall verdict
+let verdict = "Clean";
+if (stats.malicious > 0) verdict = "Malicious";
+else if (stats.suspicious > 0) verdict = "Suspicious";
+
+// Build structured summary
+const summary = {
+  file_name: fileInfo.name || "Unknown",
+  sha256: fileInfo.sha256 || "",
+  md5: fileInfo.md5 || "",
+  size: `${fileInfo.size || 0} bytes`,
+  status: attrs.status || "unknown",
+  verdict,
+  malicious_count: stats.malicious || 0,
+  suspicious_count: stats.suspicious || 0,
+  undetected_count: stats.undetected || 0,
+  report_link: vtLink
+};
+
+// Output for Gmail
+return [{
+  json: {
+    summary,
+    flaggedEngines,
+  }
+}];
+
+```
+# 8️⃣ Send Alert Via Mail
