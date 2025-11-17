@@ -67,6 +67,9 @@ Copy the scripts to Wazuh Manager:
 cp custom-n8n-fim /var/ossec/integrations/
 cp custom-n8n-fim.py /var/ossec/integrations/
 chmod +x /var/ossec/integrations/custom-n8n-fim
+chmod +x /var/ossec/integrations/custom-n8n-fim.py
+sudo chown root:wazuh custom-n8n-fim
+sudo chown root:wazuh custom-n8n-fim.py
 ```
 Add integration to /var/ossec/etc/ossec.conf:
 
@@ -74,8 +77,7 @@ Add integration to /var/ossec/etc/ossec.conf:
 <integration>
   <name>custom-n8n-fim</name>
   <hook_url>http://localhost:5678/webhook-test/wazuh-fim</hook_url>
-  <level>5</level>
-  <group>syscheck</group>
+  <rule_id>554</rule_id>
   <alert_format>json</alert_format>
 </integration>
 ```
